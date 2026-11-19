@@ -1,4 +1,4 @@
-#Project C - Lensi Gondaliya, Nina Aubourg, Ying Lu
+#Project D - Lensi Gondaliya, Nina Aubourg, Ying Lu
 nasm bootload.asm
 dd if=/dev/zero of=diskc.img bs=512 count=1000
 dd if=bootload of=diskc.img bs=512 count=1 conv=notrunc

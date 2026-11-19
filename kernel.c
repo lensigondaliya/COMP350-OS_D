@@ -1,6 +1,6 @@
 
 /* kernel.c */
-/* Project C - Lensi Gondaliya, Nina Aubourg, Ying Lu */
+/* Project D - Lensi Gondaliya, Nina Aubourg, Ying Lu */
 
 /* Function Declarations */
 void printString();
@@ -23,6 +23,7 @@ int interrupt();
 
 int main() {
     makeInterrupt21();
+    /* interrupt(0x21, 8, "this is a test message", "testmg", 3); */
     interrupt(0x21, 4, "shell", 0, 0);
     while (1);
     return 0;
