@@ -1,0 +1,310 @@
+
+/* kernel.c */
+/* Project C - Lensi Gondaliya, Nina Aubourg, Ying Lu */
+
+/* Function Declarations */
+void printString();
+void printChar();
+void readString();
+void readSector();
+void writeSector();
+void writeFile();
+void handleInterrupt21();
+int matchFileName();
+void readFile();
+void executeProgram();
+void putInMemory();
+void launchProgram();
+void terminate();
+
+/* External Assembly Functions */
+void makeInterrupt21();
+int interrupt();
+
+int main() {
+    makeInterrupt21();
+    interrupt(0x21, 4, "shell", 0, 0);
+    while (1);
+    return 0;
+}
+
+
+/* Step 1: Print String using BIOS Interrupt 0x10 */
+void printString(char *chars) {
+    int i = 0;
+    while (chars[i] != 0x0) {
+        int ax = 0x0E * 256 + chars[i];
+        interrupt(0x10, ax, 0, 0, 0);
+        i++;
+    }
+}
+
+/* Helper function for printing a single character */
+void printChar(char c) {
+    int ax = 0x0E * 256 + c;
+    interrupt(0x10, ax, 0, 0, 0);
+}
+
+/* Step 2: Read String from Keyboard using BIOS Interrupt 0x16 */
+void readString(char *line) {
+    int i = 0;
+    char key = 0;
+
+    while (1) {
+        key = (char)interrupt(0x16, 0, 0, 0, 0);
+
+        /* Handle Enter Key */
+        if (key == 0x0D) {
+            line[i] = 0x0D;
+            line[i + 1] = 0x0A;  /* Line Feed */
+            line[i + 2] = 0x00; /* End of String */
+            printChar(0x0D);
+            printChar(0x0A);
+            return;
+        }
+        /* Handle Backspace Key */
+        else if (key == 0x08) {
+            if (i > 0) {
+                i--;
+                printChar(0x08); /* Move cursor back */
+                printChar(' ');  /* Overwrite character */
+                printChar(0x08); /* Move cursor back */
+            }
+        }
+        /* Printable Characters */
+        else {
+            line[i] = key;
+            printChar(key); /* Echo character to screen */
+            i++;
+        }
+    }
+}
+
+/* Step 3: Read Sector from Disk using BIOS Interrupt 0x13 */
+void readSector(char *buffer, int sector) {
+    int relativeSector = (sector - (sector / 18) * 18) + 1;
+    int tempHead = sector / 18;
+    int head = tempHead - (tempHead / 2) * 2;
+    int track = sector / 36;
+
+    int ax = 2 * 256 + 1;                  /* AH = 2 (read), AL = 1 sector */
+    int cx = track * 256 + relativeSector; /* CH = track (0), CL = sector + 1 */
+    int dx = head * 256 + 0x80;            /* DH = head (0), DL = hard drive (0x80) */
+
+    interrupt(0x13, ax, buffer, cx, dx);
+}
+
+/* Project D Step 1: Write Sector to Disk using BIOS Interrupt 0x13 */
+
+void writeSector(char *buffer, int sector) {
+    int relativeSector = (sector - (sector / 18) * 18) + 1;
+    int tempHead = sector / 18;
+    int head = tempHead - (tempHead / 2) * 2;
+    int track = sector / 36;
+
+    int ax = 3 * 256 + 1;     /* AH = 3 (write), AL = 1 sector */
+    int cx = track * 256 + relativeSector;
+    int dx = head * 256 + 0x80;
+
+    interrupt(0x13, ax, buffer, cx, dx);
+}
+
+/* Project D Step 3: Delete a file */
+void deleteFile(char *fileName) {
+    char dir[512];
+    char map[512];
+    int fileentry;
+    int i;
+    int sector;
+
+    /* 1. Load the Map (sector 1) and Directory (sector 2) */
+    readSector(map, 1);
+    readSector(dir, 2);
+
+    /* 2. Find the file in the directory */
+    for (fileentry = 0; fileentry < 512; fileentry = fileentry + 32) {
+        if (dir[fileentry] != 0 && matchFileName(fileName, &dir[fileentry])) {
+
+            /* 3. Mark the directory entry as deleted */
+            dir[fileentry] = '\0';
+
+            /* 4. Free each of the file's sectors in the Map */
+            for (i = 6; i < 32; i++) {
+                sector = (unsigned char) dir[fileentry + i];
+                if (sector == 0) break;
+                map[sector] = 0;
+            }
+
+            /* 5. Write the Map and Directory back to the disk */
+            writeSector(map, 1);
+            writeSector(dir, 2);
+            return;
+        }
+    }
+}
+/* Helper function to compare filenames up to 6 characters */
+int matchFileName(char *fileName, char* dirEntry) {
+    int i;
+    int endReached = 0;
+
+    for (i = 0; i < 6; i++) {
+        /* If input string ends before 6 chars, pad comparison with null bytes */
+        char c;
+        if (endReached) {
+            c = 0x00;
+        } else if (fileName[i] == '\0' || fileName[i] == '\r' || fileName[i] == '\n') {
+            endReached = 1;
+            c = 0x00;
+        } else {
+            c = fileName[i];
+        }
+        if (c != dirEntry[i]) {
+            return 0;
+        }
+    }
+    return 1; /* Match found */
+}
+
+/* Reads a file by name into a memory buffer */
+void readFile(char *fileName, char* buffer, int* sectorsRead) {
+    char dir[512];
+    int fileentry;
+    int sectorIndex;
+    int found = 0;
+
+    *sectorsRead = 0;
+
+    /* 1. Read Sector 2 (Directory) into local buffer */
+    readSector(dir, 2);
+
+    /* 2. Step through all 16 entries (each 32 bytes wide) */
+    for (fileentry = 0; fileentry < 512; fileentry += 32) {
+        /* Skip unused directory entries */
+        if (dir[fileentry] == 0x00) {
+            continue;
+        }
+
+        /* Check if the filename matches */
+        if (matchFileName(fileName, &dir[fileentry])) {
+            found = 1;
+            break;
+        }
+    }
+
+    /* If not found, exit with sectorsRead = 0 */
+    if (!found) {
+        return;
+    }
+
+    /* 3. Load sectors sequentially into buffer */
+    for (sectorIndex = 6; sectorIndex < 32; sectorIndex++) {
+        unsigned char  currentSector = (unsigned char) dir[fileentry + sectorIndex];
+
+        /* Sector 0 indicates end of file */
+        if (currentSector == 0) {
+            break;
+        }
+
+        /* Read sector into buffer offset by 512 bytes each iteration */
+        readSector(buffer + (*sectorsRead * 512), currentSector);
+        (*sectorsRead)++;
+    }
+}
+
+/* Step 4 & 5: Service Handler for Interrupt 0x21 */
+void handleInterrupt21(int ax, int bx, int cx, int dx) {
+    if (ax == 0) {
+        printString((char*)bx);
+    } else if (ax == 1) {
+        readString((char*)bx);
+    } else if (ax == 2) {
+        readSector((char*)bx, cx);
+    } else if (ax == 3) { // AX = 3: Read File, BX = fileName, CX = buffer, DX = sectorRead
+        readFile((char*)bx, (char*)cx, (int*)dx);
+    } else if (ax == 4) {
+        executeProgram((char*)bx);
+    } else if (ax == 5) {
+        terminate();
+    } else if (ax == 6) {
+        writeSector((char*)bx, cx);
+    } else if (ax == 7) {
+        deleteFile((char*)bx);
+    } else if (ax == 8) {
+        writeFile((char*)bx, (char*)cx, dx);
+    } else {
+          printString("Error: Invalid Interrupt call\r\n");
+
+    }
+}
+
+
+/* Step 2: Load a program into memory at segment 0x2000 and run it */
+void executeProgram(char *name) {
+    char buffer[13312];
+    int sectorsRead;
+    int i;
+
+    readFile(name, buffer, &sectorsRead);
+    if (sectorsRead == 0) {
+        printString("program not found\r\n");
+        return;
+    }
+    for (i = 0; i < sectorsRead * 512; i++) {
+        putInMemory(0x2000, i, buffer[i]);
+    }
+    launchProgram(0x2000);
+}
+
+/* Step 3: Terminate program - reloads the shell */
+void terminate() {
+    char shellname[6];
+    shellname[0] = 's';
+    shellname[1] = 'h';
+    shellname[2] = 'e';
+    shellname[3] = 'l';
+    shellname[4] = 'l';
+    shellname[5] = '\0';
+    executeProgram(shellname);
+}
+
+/* Project D Step 4: Write a file to the disk */
+void writeFile(char *buffer, char *fileName, int numberOfSectors) {
+    char dir[512];
+    char map[512];
+    int fileentry;
+    int i;
+    int sectorNum;
+    int count;
+
+    readSector(map, 1);
+    readSector(dir, 2);
+
+    for (fileentry = 0; fileentry < 512; fileentry = fileentry + 32) {
+        if (dir[fileentry] == '\0') break;
+    }
+    if (fileentry == 512) return;
+
+    for (i = 0; i < 6; i++) {
+        if (fileName[i] == '\0' || fileName[i] == '\r' || fileName[i] == '\n') break;
+        dir[fileentry + i] = fileName[i];
+    }
+    for (; i < 6; i++) {
+        dir[fileentry + i] = '\0';
+    }
+
+    sectorNum = 3;
+    for (count = 0; count < numberOfSectors && count < 26; count++) {
+        while (sectorNum < 256 && map[sectorNum] != 0) sectorNum++;
+        if (sectorNum == 256) return;
+        map[sectorNum] = 0xFF;
+        dir[fileentry + 6 + count] = sectorNum;
+        writeSector(buffer + count * 512, sectorNum);
+    }
+
+    for (i = 6 + count; i < 32; i++) {
+        dir[fileentry + i] = 0;
+    }
+
+    writeSector(map, 1);
+    writeSector(dir, 2);
+}

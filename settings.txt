@@ -1,0 +1,3 @@
+DiskC /Users/lensigondaliya/Desktop/Fall2026/COMP350/ProjectD/diskc.img 0 28 2 18
+ROM resource/bios.bin
+VideoROM resource/vgabios.bin
